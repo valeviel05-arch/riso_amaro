@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LUT Camera - Deserto Rosso</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+        body {
+            margin: 0;
+            background: #000;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+        }
+        #container {
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        canvas {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+        }
+        .ui-layer {
+            position: fixed;
+            bottom: 2rem;
+            display: flex;
+            gap: 1rem;
+            z-index: 10;
+        }
+        button {
+            padding: 1rem 1.5rem;
+            border-radius: 50px;
+            border: none;
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+            backdrop-filter: blur(10px);
+            font-weight: bold;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        button:active {
+            transform: scale(0.95);
+        }
+        #captureBtn {
+            background: #e62e2e;
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .status {
+            position: fixed;
+            top: 1rem;
+            color: rgba(255,255,255,0.5);
+            font-size: 0.8rem;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="status" class="status">Loading LUT and Camera...</div>
+    <div id="container"></div>
+
+    <div class="ui-layer">
+        <button id="switchBtn">🔄 Switch</button>
+        <button id="captureBtn">📸</button>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { LUTCubeLoader } from 'three/addons/loaders/LUTCubeLoader.js';
+
+        const lutPath = 'desertorosso.CUBE';
+        let currentFacing = "environment";
+        let video, videoTexture, mesh, renderer, scene, camera, material;
+        let stream;
+
+        async function init() {
+            scene = new THREE.Scene();
+            camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+            renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.getElementById('container').appendChild(renderer.domElement);
+
+            video = document.createElement('video');
+            video.autoplay = true;
+            video.playsInline = true;
+
+            const lutLoader = new LUTCubeLoader();
+            const lutData = await lutLoader.loadAsync(lutPath);
+
+            await startCamera();
+
+            videoTexture = new THREE.VideoTexture(video);
+            videoTexture.colorSpace = THREE.SRGBColorSpace;
+
+            material = new THREE.ShaderMaterial({
+                uniforms: {
+                    tDiffuse: { value: videoTexture },
+                    tLut: { value: lutData.texture3D }
+                },
+                vertexShader: `
+                    varying vec2 vUv;
+                    void main() {
+                        vUv = uv;
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                    }
+                `,
+                fragmentShader: `
+                    precision highp float;
+                    precision highp sampler3D;
+                    uniform sampler2D tDiffuse;
+                    uniform sampler3D tLut;
+                    varying vec2 vUv;
+
+                    void main() {
+                        vec4 color = texture2D(tDiffuse, vUv);
+                        gl_FragColor = texture(tLut, color.rgb);
+                    }
+                `
+            });
+
+            mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);
+            scene.add(mesh);
+
+            window.addEventListener('resize', onWindowResize);
+            animate();
+            document.getElementById('status').textContent = "Filter Active";
+        }
+
+        async function startCamera() {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+            }
+
+            stream = await navigator.mediaDevices.getUserMedia({
+                video: { 
+                    facingMode: currentFacing,
+                    width: { ideal: 1920 },
+                    height: { ideal: 1080 }
+                },
+                audio: false
+            });
+            
+            video.srcObject = stream;
+            await video.play();
+            onWindowResize();
+        }
+
+        function onWindowResize() {
+            const videoAspect = video.videoWidth / video.videoHeight;
+            const windowAspect = window.innerWidth / window.innerHeight;
+
+            if (windowAspect > videoAspect) {
+                renderer.setSize(window.innerHeight * videoAspect, window.innerHeight);
+            } else {
+                renderer.setSize(window.innerWidth, window.innerWidth / videoAspect);
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
+        }
+
+        document.getElementById('captureBtn').addEventListener('click', () => {
+            const link = document.createElement('a');
+            link.download = `technicolor-${Date.now()}.png`;
+            link.href = renderer.domElement.toDataURL('image/png');
+            link.click();
+        });
+
+        document.getElementById('switchBtn').addEventListener('click', () => {
+            currentFacing = currentFacing === "environment" ? "user" : "environment";
+            startCamera();
+        });
+
+        init().catch(err => {
+            console.error(err);
+            document.getElementById('status').textContent = "Error: " + err.message;
+        });
+    </script>
+</body>
+</html>
